@@ -1,9 +1,34 @@
-const { ApolloServer, gql } = require("apollo-server");
-const { buildFederatedSchema } = require("@apollo/federation");
+import { ApolloServer, gql } from "apollo-server";
+import { buildSubgraphSchema } from "@apollo/federation";
 import { CreatePostInput, UpdatePostInput } from "./types";
+import jwt from "jsonwebtoken";
+import { ExpressContext } from "apollo-server-express";
 
 // Initialize an empty array to store posts
 let posts: any[] = [];
+
+// Define the function to extract user information from the token
+const extractUserFromToken = (token: string) => {
+  try {
+    console.log("Token value:", token); // Log the token
+
+    const decodedToken: any = jwt.verify(
+      token,
+      process.env.SECRET_KEY || "8000",
+      { ignoreExpiration: false } // Ensure token is not expired
+    );
+    console.log("Decoded token:", decodedToken);
+    return {
+      userId: decodedToken.userId,
+    };
+  } catch (error) {
+    console.error(
+      "Error verifying token:",
+      (error as { message: string }).message
+    );
+    return null;
+  }
+};
 
 // GraphQL schema
 const typeDefs = gql`
@@ -57,8 +82,7 @@ const resolvers = {
       context: { user: { userId: number } }
     ) => {
       // Check if the user is authenticated
-
-  console.log("Context in createPost (posts service):", context);
+      console.log("Context in createPost (posts service):", context);
       if (!context.user || !context.user.userId) {
         throw new Error("You must be logged in to create a post");
       }
@@ -102,11 +126,43 @@ const resolvers = {
     },
   },
 };
-// Apollo server setup
-const server = new ApolloServer({
-  schema: buildFederatedSchema([{ typeDefs, resolvers }]),
-});
 
+// Apollo server setup
+
+const server = new ApolloServer({
+  schema: buildSubgraphSchema([{ typeDefs, resolvers }]),
+  context: ({ req }: ExpressContext) => {
+    const forwardedAuthorization = req.headers.originalauthorization || "";
+
+    if (Array.isArray(forwardedAuthorization)) {
+      const authorizationString = forwardedAuthorization[0];
+      const [bearer, forwardedToken] = authorizationString.split(" ");
+
+      if (bearer && bearer.toLowerCase() === "bearer" && forwardedToken) {
+        const user = extractUserFromToken(forwardedToken);
+        console.log("Context in posts service:", { user });
+        return { user };
+      } else {
+        console.error("Invalid authorization header format in posts service");
+        return { user: null };
+      }
+    } else if (typeof forwardedAuthorization === "string") {
+      const [bearer, forwardedToken] = forwardedAuthorization.split(" ");
+
+      if (bearer && bearer.toLowerCase() === "bearer" && forwardedToken) {
+        const user = extractUserFromToken(forwardedToken);
+        console.log("Context in posts service:", { user });
+        return { user };
+      } else {
+        console.error("Invalid authorization header format in posts service");
+        return { user: null };
+      }
+    } else {
+      console.error("Invalid authorization header format in posts service");
+      return { user: null };
+    }
+  },
+});
 // Start server
 server.listen({ port: 7006 }).then(({ url }: { url: string }) => {
   console.log(`Post service running at ${url}`);
