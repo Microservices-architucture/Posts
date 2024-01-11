@@ -1,8 +1,10 @@
+import express from "express";
 import { ApolloServer, gql } from "apollo-server";
 import { buildSubgraphSchema } from "@apollo/federation";
 import { CreatePostInput, UpdatePostInput } from "./types";
 import jwt from "jsonwebtoken";
 import { ExpressContext } from "apollo-server-express";
+import cors from "cors";
 
 // Initialize an empty array to store posts
 let posts: any[] = [];
@@ -10,22 +12,16 @@ let posts: any[] = [];
 // Define the function to extract user information from the token
 const extractUserFromToken = (token: string) => {
   try {
-    console.log("Token value:", token); // Log the token
-
     const decodedToken: any = jwt.verify(
       token,
       process.env.SECRET_KEY || "8000",
-      { ignoreExpiration: false } // Ensure token is not expired
+      { ignoreExpiration: false }
     );
-    console.log("Decoded token:", decodedToken);
     return {
       userId: decodedToken.userId,
     };
-  } catch (error) {
-    console.error(
-      "Error verifying token:",
-      (error as { message: string }).message
-    );
+  } catch (error: any) {
+    console.error("Error verifying token:", error.message);
     return null;
   }
 };
@@ -71,10 +67,30 @@ const typeDefs = gql`
 // Resolvers
 const resolvers = {
   Query: {
-    getPost: (_: any, { id }: { id: string }) =>
-      posts.find((post) => post.id === parseInt(id)),
+    getPost: async (
+      _: any,
+      { id }: { id: string },
+      context: { user?: { userId: number } | null; token?: string }
+    ) => {
+      // Check if context.user is not null before accessing userId
+      const userId = context.user ? context.user.userId : null;
+      console.log("context", context);
+      console.log("context.user", context.user);
+
+      if (!userId) {
+        throw new Error("Authentication failed");
+      }
+
+      // Log the token and user information
+      console.log("Token value:", context.token);
+      console.log("User ID:", userId);
+
+      const post = posts.find((post) => post.id === parseInt(id));
+      return post;
+    },
     allPosts: () => posts,
   },
+
   Mutation: {
     createPost: async (
       _: any,
@@ -129,38 +145,17 @@ const resolvers = {
 
 // Apollo server setup
 
+const app = express();
+app.use(cors());
 const server = new ApolloServer({
   schema: buildSubgraphSchema([{ typeDefs, resolvers }]),
   context: ({ req }: ExpressContext) => {
-    const forwardedAuthorization = req.headers.originalauthorization || "";
+    console.log("HEADERS RECEIVED IN POSTS SERVICE", req.headers);
 
-    if (Array.isArray(forwardedAuthorization)) {
-      const authorizationString = forwardedAuthorization[0];
-      const [bearer, forwardedToken] = authorizationString.split(" ");
+    const token = req.headers.authorization || "";
+    console.log("CONTEXT POSTS SERVICE TOKEN VALUE", token);
 
-      if (bearer && bearer.toLowerCase() === "bearer" && forwardedToken) {
-        const user = extractUserFromToken(forwardedToken);
-        console.log("Context in posts service:", { user });
-        return { user };
-      } else {
-        console.error("Invalid authorization header format in posts service");
-        return { user: null };
-      }
-    } else if (typeof forwardedAuthorization === "string") {
-      const [bearer, forwardedToken] = forwardedAuthorization.split(" ");
-
-      if (bearer && bearer.toLowerCase() === "bearer" && forwardedToken) {
-        const user = extractUserFromToken(forwardedToken);
-        console.log("Context in posts service:", { user });
-        return { user };
-      } else {
-        console.error("Invalid authorization header format in posts service");
-        return { user: null };
-      }
-    } else {
-      console.error("Invalid authorization header format in posts service");
-      return { user: null };
-    }
+    return { token };
   },
 });
 // Start server
